@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.backup*
+*.bak*
+*.before-*
+*.candidate
+*.pre-*
+.venv/
+venv/
+.env
+.DS_Store
