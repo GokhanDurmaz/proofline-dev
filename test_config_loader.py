@@ -21,6 +21,10 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(result["max_iterations"], 10)
         self.assertEqual(result["temperature"], 0.7)
 
+    def test_validate_config_rejects_unknown_keys(self):
+        with self.assertRaisesRegex(ConfigError, "(?i)unknown"):
+            validate_config({"max_iteratons": 10})
+
     def test_validate_config_rejects_non_dict(self):
         with self.assertRaises(ConfigError):
             validate_config("not a dict")

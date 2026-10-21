@@ -28,6 +28,11 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise ConfigError("Configuration must be a dictionary")
 
+    unknown_keys = set(config) - set(DEFAULT_CONFIG)
+    if unknown_keys:
+        names = ", ".join(sorted(str(key) for key in unknown_keys))
+        raise ConfigError(f"Unknown configuration key(s): {names}")
+
     validated = {}
 
     if "api_url" in config:
