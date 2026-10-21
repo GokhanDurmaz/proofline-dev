@@ -1,5 +1,6 @@
 """Configuration loader for MLX GSQ agent."""
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,6 +21,20 @@ DEFAULT_CONFIG = {
     "max_output_chars": 12000,
     "temperature": 0,
     "max_tokens": 512,
+}
+
+# Environment variable -> configuration key. Tuple values also carry the
+# converter used for the raw environment string.
+ENV_MAPPING = {
+    "MLX_API_URL": "api_url",
+    "MLX_MODEL": "model",
+    "MLX_MAX_ITERATIONS": ("max_iterations", int),
+    "MLX_FINALIZATION_ITERATIONS": ("finalization_iterations", int),
+    "MLX_MAX_SOURCE_FILES": ("max_source_files", int),
+    "MLX_MAX_FILE_CHARS": ("max_file_chars", int),
+    "MLX_MAX_OUTPUT_CHARS": ("max_output_chars", int),
+    "MLX_MAX_TOKENS": ("max_tokens", int),
+    "MLX_TEMPERATURE": ("temperature", float),
 }
 
 
@@ -93,6 +108,8 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         temperature = config["temperature"]
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             raise ConfigError("temperature must be a number")
+        if not math.isfinite(temperature):
+            raise ConfigError("temperature must be a finite number")
         if temperature < 0 or temperature > 2:
             raise ConfigError("temperature must be between 0 and 2")
         validated["temperature"] = temperature
@@ -113,8 +130,15 @@ def load_config(config_path: Optional[str] = None, **overrides) -> Dict[str, Any
     config = DEFAULT_CONFIG.copy()
 
     # Try to load from file if specified
-    if config_path:
-        path = Path(config_path)
+    if config_path is not None:
+        raw_path = str(config_path)
+        if not raw_path.strip():
+            raise ConfigError("Configuration file path must not be empty")
+        path = Path(raw_path)
+        if path.is_dir():
+            raise ConfigError(
+                f"Configuration file path is a directory, not a file: {config_path}"
+            )
         if path.exists():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
@@ -138,16 +162,7 @@ def load_config(config_path: Optional[str] = None, **overrides) -> Dict[str, Any
             raise ConfigError(f"Configuration file not found: {config_path}")
 
     # Load from environment variables
-    env_mapping = {
-        "MLX_API_URL": "api_url",
-        "MLX_MODEL": "model",
-        "MLX_MAX_ITERATIONS": ("max_iterations", int),
-        "MLX_MAX_SOURCE_FILES": ("max_source_files", int),
-        "MLX_MAX_TOKENS": ("max_tokens", int),
-        "MLX_TEMPERATURE": ("temperature", float),
-    }
-
-    for env_key, mapping in env_mapping.items():
+    for env_key, mapping in ENV_MAPPING.items():
         if env_key in os.environ:
             env_value = os.environ[env_key]
             if isinstance(mapping, tuple):

@@ -1,6 +1,7 @@
 import importlib
 import importlib.machinery
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -89,6 +90,201 @@ class ConfigIntegrationTests(unittest.TestCase):
             for key in list(sys.modules.keys()):
                 if key.startswith('local_agent') or key.startswith('config'):
                     del sys.modules[key]
+
+
+class CliConfigTests(unittest.TestCase):
+    """End-to-end checks for the `--config` command-line option."""
+
+    UNREACHABLE_URL = "http://127.0.0.1:1/v1/chat/completions"
+    OTHER_UNREACHABLE_URL = "http://127.0.0.1:2/v1/chat/completions"
+
+    def _env(self, **overrides):
+        """Build a subprocess environment without inherited MLX_* settings."""
+        env = os.environ.copy()
+        for key in list(env):
+            if key.startswith("MLX_"):
+                del env[key]
+        env.update(overrides)
+        return env
+
+    def _run_agent(self, args, env=None):
+        return subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "local_agent.py"), *args],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._env() if env is None else env,
+            timeout=120,
+        )
+
+    def _write_config(self, directory, payload):
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_cli_loads_json_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_config(tmp, {
+                "api_url": self.UNREACHABLE_URL,
+                "model": "config-file-model",
+                "max_iterations": 1,
+            })
+
+            proc = self._run_agent([
+                "--config", config_path,
+                "--root", tmp,
+                "describe this project",
+            ])
+
+            stdout = proc.stdout.decode()
+            stderr = proc.stderr.decode()
+            # The file values reached the running agent.
+            self.assertIn(f"API: {self.UNREACHABLE_URL}", stdout)
+            self.assertIn("Agent iteration 1/1", stdout)
+            # The run reached the model call and failed on the unreachable URL.
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("API error", stderr)
+
+    def test_cli_env_overrides_json_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_config(tmp, {
+                "api_url": self.UNREACHABLE_URL,
+                "max_iterations": 1,
+            })
+
+            proc = self._run_agent(
+                ["--config", config_path, "--root", tmp, "describe this project"],
+                env=self._env(MLX_API_URL=self.OTHER_UNREACHABLE_URL),
+            )
+
+            stdout = proc.stdout.decode()
+            self.assertIn(f"API: {self.OTHER_UNREACHABLE_URL}", stdout)
+            self.assertNotIn(f"API: {self.UNREACHABLE_URL}", stdout)
+
+    def test_cli_without_config_keeps_existing_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self._run_agent(
+                ["--root", tmp, "describe this project"],
+                env=self._env(MLX_API_URL=self.UNREACHABLE_URL),
+            )
+
+            stdout = proc.stdout.decode()
+            # Default max_iterations is still used when no file is given.
+            self.assertIn(f"API: {self.UNREACHABLE_URL}", stdout)
+            self.assertIn("Agent iteration 1/20", stdout)
+
+    def test_cli_existing_options_remain_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_config(tmp, {
+                "api_url": self.UNREACHABLE_URL,
+                "max_iterations": 1,
+            })
+
+            proc = self._run_agent([
+                "--config", config_path,
+                "--root", tmp,
+                "--mode", "read-only",
+                "--allow-command", "echo hi",
+                "describe this project",
+            ])
+
+            stderr = proc.stderr.decode()
+            self.assertNotIn("unrecognized arguments", stderr)
+            self.assertNotIn("error: unrecognized", stderr)
+            self.assertIn(f"API: {self.UNREACHABLE_URL}", proc.stdout.decode())
+
+            help_proc = self._run_agent(["--help"])
+            self.assertEqual(help_proc.returncode, 0)
+            help_text = help_proc.stdout.decode()
+            for option in ("--root", "--config", "--mode", "--allow-command"):
+                self.assertIn(option, help_text)
+
+            missing_root = self._run_agent([
+                "--root", str(Path(tmp) / "does-not-exist"),
+                "describe this project",
+            ])
+            self.assertEqual(missing_root.returncode, 2)
+            self.assertIn(
+                "Project directory does not exist",
+                missing_root.stderr.decode(),
+            )
+
+    def test_cli_rejects_missing_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "absent.json")
+
+            proc = self._run_agent([
+                "--config", missing,
+                "--root", tmp,
+                "describe this project",
+            ])
+
+            stderr = proc.stderr.decode()
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Configuration error", stderr)
+            self.assertIn("not found", stderr)
+
+    def test_cli_rejects_empty_config_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self._run_agent([
+                "--config", "",
+                "--root", tmp,
+                "describe this project",
+            ])
+
+            stdout = proc.stdout.decode()
+            stderr = proc.stderr.decode()
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Configuration error", stderr)
+            self.assertIn("must not be empty", stderr)
+            # The agent must not silently continue with the default configuration.
+            self.assertNotIn("Agent iteration", stdout)
+
+    def test_cli_rejects_directory_config_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self._run_agent([
+                "--config", tmp,
+                "--root", tmp,
+                "describe this project",
+            ])
+
+            stdout = proc.stdout.decode()
+            stderr = proc.stderr.decode()
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Configuration error", stderr)
+            self.assertIn("is a directory", stderr)
+            self.assertNotIn("Agent iteration", stdout)
+
+    def test_cli_rejects_invalid_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = str(Path(tmp) / "broken.json")
+            Path(config_path).write_text("{ invalid json }", encoding="utf-8")
+
+            proc = self._run_agent([
+                "--config", config_path,
+                "--root", tmp,
+                "describe this project",
+            ])
+
+            stderr = proc.stderr.decode()
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Configuration error", stderr)
+            self.assertIn("Invalid JSON", stderr)
+
+    def test_cli_rejects_unknown_config_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = self._write_config(tmp, {"max_iteratons": 5})
+
+            proc = self._run_agent([
+                "--config", config_path,
+                "--root", tmp,
+                "describe this project",
+            ])
+
+            stderr = proc.stderr.decode()
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Configuration error", stderr)
+            self.assertIn("Unknown configuration key", stderr)
 
 
 if __name__ == '__main__':

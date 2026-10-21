@@ -13,6 +13,92 @@ The primary goal is to produce reliable, evidence-based source-code reviews with
 
 The agent is intended to run locally, inspect source code through tools, and produce concise architectural findings grounded in actual source lines.
 
+## Configuration
+
+`config.py` owns all configuration. Every value is validated before it is used, and the agent refuses to start on an invalid configuration.
+
+Configuration is resolved in this order, where later sources win:
+
+1. Built-in defaults
+2. A JSON configuration file passed with `--config PATH`
+3. `MLX_*` environment variables
+
+### Command-line option
+
+`--config PATH` points the agent at a JSON configuration file. The file must contain a JSON object whose keys are the configuration keys listed below; unknown keys are rejected.
+
+```bash
+python3 local_agent.py --config config.json --root /path/to/project "Describe the architecture"
+```
+
+Example `config.json`:
+
+```json
+{
+  "api_url": "http://127.0.0.1:8000/v1/chat/completions",
+  "model": "mlx-community/Mellum2-12B-A2.5B-Instruct-4bit",
+  "max_iterations": 20,
+  "finalization_iterations": 4,
+  "max_source_files": 8,
+  "max_file_chars": 30000,
+  "max_output_chars": 12000,
+  "temperature": 0,
+  "max_tokens": 512
+}
+```
+
+### Configuration keys and defaults
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `api_url` | string | `http://127.0.0.1:8000/v1/chat/completions` | OpenAI-compatible chat completions endpoint |
+| `model` | string | `mlx-community/Mellum2-12B-A2.5B-Instruct-4bit` | Model name sent in the request payload |
+| `max_iterations` | integer, at least 1 | `20` | Maximum number of agent iterations |
+| `finalization_iterations` | integer, at least 0 | `4` | Iterations at the end of the run reserved for producing the final report |
+| `max_source_files` | integer, at least 1 | `8` | Maximum number of distinct source files collected as evidence |
+| `max_file_chars` | integer, at least 1 | `30000` | Maximum characters read from a single source file |
+| `max_output_chars` | integer, at least 1 | `12000` | Maximum characters kept from tool output |
+| `temperature` | number, 0 to 2 | `0` | Sampling temperature sent in the request payload |
+| `max_tokens` | integer, at least 1 | `512` | Default completion token limit for model requests |
+
+### Environment variables
+
+Every configuration key can be overridden with an environment variable:
+
+| Environment variable | Configuration key | Type |
+|---|---|---|
+| `MLX_API_URL` | `api_url` | string |
+| `MLX_MODEL` | `model` | string |
+| `MLX_MAX_ITERATIONS` | `max_iterations` | integer |
+| `MLX_FINALIZATION_ITERATIONS` | `finalization_iterations` | integer |
+| `MLX_MAX_SOURCE_FILES` | `max_source_files` | integer |
+| `MLX_MAX_FILE_CHARS` | `max_file_chars` | integer |
+| `MLX_MAX_OUTPUT_CHARS` | `max_output_chars` | integer |
+| `MLX_MAX_TOKENS` | `max_tokens` | integer |
+| `MLX_TEMPERATURE` | `temperature` | number |
+
+Environment variables take precedence over the values in the JSON configuration file:
+
+```bash
+MLX_MAX_ITERATIONS=40 MLX_TEMPERATURE=0.2 \
+  python3 local_agent.py --config config.json --root /path/to/project "Describe the architecture"
+```
+
+### Invalid configuration
+
+Invalid configuration is reported on stderr as `Configuration error: ...` and the agent exits with a non-zero status before making any model request. Examples:
+
+```text
+Configuration error: Configuration file path must not be empty
+Configuration error: Configuration file path is a directory, not a file: /path/to/project
+Configuration error: Configuration file not found: /path/to/missing.json
+Configuration error: Invalid JSON in config file: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
+Configuration error: Unknown configuration key(s): max_iteratons
+Configuration error: Invalid environment variable MLX_MAX_ITERATIONS: max_iterations must be at least 1
+```
+
+The same mechanism rejects an empty `--config` path, a directory passed as the configuration path, a missing file, malformed JSON, a file that is not a JSON object, unknown keys, values of the wrong type, and values outside their allowed range.
+
 ## Current Architecture
 
 The agent uses an iterative model/tool interaction loop.
@@ -43,7 +129,7 @@ Current limits include:
 - Maximum 30,000 characters per source file
 - Maximum 12,000 characters for tool output
 
-These limits help constrain inspection and model context usage.
+These limits help constrain inspection and model context usage. They are the built-in defaults and can be changed through configuration; see [Configuration](#configuration).
 
 ### Citation validation
 

@@ -12,18 +12,26 @@ from pathlib import Path
 
 from config import ConfigError, load_config
 
+
+def _apply_config(config: dict) -> None:
+    """Bind validated configuration values to the module-level constants."""
+    global API_URL, MODEL, MAX_ITERATIONS, FINALIZATION_ITERATIONS
+    global MAX_SOURCE_FILES, MAX_FILE_CHARS, MAX_OUTPUT_CHARS
+    global DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
+    API_URL = config["api_url"]
+    MODEL = config["model"]
+    MAX_ITERATIONS = config["max_iterations"]
+    FINALIZATION_ITERATIONS = config["finalization_iterations"]
+    MAX_SOURCE_FILES = config["max_source_files"]
+    MAX_FILE_CHARS = config["max_file_chars"]
+    MAX_OUTPUT_CHARS = config["max_output_chars"]
+    DEFAULT_TEMPERATURE = config.get("temperature", 0)
+    DEFAULT_MAX_TOKENS = config.get("max_tokens", 512)
+
+
 # Load configuration with validation at import time
 try:
-    _config = load_config()
-    API_URL = _config["api_url"]
-    MODEL = _config["model"]
-    MAX_ITERATIONS = _config["max_iterations"]
-    FINALIZATION_ITERATIONS = _config["finalization_iterations"]
-    MAX_SOURCE_FILES = _config["max_source_files"]
-    MAX_FILE_CHARS = _config["max_file_chars"]
-    MAX_OUTPUT_CHARS = _config["max_output_chars"]
-    DEFAULT_TEMPERATURE = _config.get("temperature", 0)
-    DEFAULT_MAX_TOKENS = _config.get("max_tokens", 512)
+    _apply_config(load_config())
 except ConfigError as exc:
     print(f"Configuration error: {exc}", file=sys.stderr)
     sys.exit(1)
@@ -992,6 +1000,16 @@ def main() -> int:
         help="Project directory to work in (default: current directory)",
     )
     parser.add_argument(
+        "--config",
+        dest="config_path",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a JSON configuration file; file values are overridden by "
+            "MLX_* environment variables (default: no configuration file)"
+        ),
+    )
+    parser.add_argument(
         "--mode", choices=("read-only", "edit"), default="read-only",
         help="Tool policy (default: read-only)",
     )
@@ -1004,6 +1022,13 @@ def main() -> int:
     global POLICY_MODE, EXPLICIT_COMMANDS
     POLICY_MODE = args.mode
     EXPLICIT_COMMANDS = args.allow_command
+
+    if args.config_path is not None:
+        try:
+            _apply_config(load_config(config_path=args.config_path))
+        except ConfigError as exc:
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 1
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
