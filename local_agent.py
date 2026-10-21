@@ -10,13 +10,23 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-API_URL = "http" + "://127.0.0.1:8000/v1/chat/completions"
-MODEL = "mlx-community/Mellum2-12B-A2.5B-Instruct-4bit"
-MAX_ITERATIONS = 20
-FINALIZATION_ITERATIONS = 4
-MAX_SOURCE_FILES = 8
-MAX_FILE_CHARS = 30_000
-MAX_OUTPUT_CHARS = 12_000
+from config import ConfigError, load_config
+
+# Load configuration with validation at import time
+try:
+    _config = load_config()
+    API_URL = _config["api_url"]
+    MODEL = _config["model"]
+    MAX_ITERATIONS = _config["max_iterations"]
+    FINALIZATION_ITERATIONS = _config["finalization_iterations"]
+    MAX_SOURCE_FILES = _config["max_source_files"]
+    MAX_FILE_CHARS = _config["max_file_chars"]
+    MAX_OUTPUT_CHARS = _config["max_output_chars"]
+    DEFAULT_TEMPERATURE = _config.get("temperature", 0)
+    DEFAULT_MAX_TOKENS = _config.get("max_tokens", 512)
+except ConfigError as exc:
+    print(f"Configuration error: {exc}", file=sys.stderr)
+    sys.exit(1)
 
 IGNORED = {
     ".git", ".venv", "venv", "node_modules", "build",
@@ -395,13 +405,15 @@ def request_model(
     messages: list[dict],
     allow_tools: bool = True,
     response_format: dict | None = None,
-    max_tokens: int = 512,
+    max_tokens: int | None = None,
 ) -> dict:
+    if max_tokens is None:
+        max_tokens = DEFAULT_MAX_TOKENS
     available_tools = TOOLS if POLICY_MODE == "edit" else [tool for tool in TOOLS if tool["function"]["name"] in {"list_files", "read_file"}]
     payload = {
         "model": MODEL,
         "messages": messages,
-        "temperature": 0,
+        "temperature": DEFAULT_TEMPERATURE,
         "max_tokens": max_tokens,
     }
     if response_format is not None:
@@ -580,6 +592,8 @@ def prefetch_missing_read_evidence(
 
         key = item["path"]
         if key not in read_evidence:
+            if len(read_evidence) >= MAX_SOURCE_FILES:
+                continue
             read_evidence[key] = {
                 "total_lines": item["total_lines"],
                 "lines": set(),
